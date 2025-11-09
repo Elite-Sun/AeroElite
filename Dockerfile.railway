@@ -1,7 +1,7 @@
-# Railway Deployment - Combined Backend & Frontend
-FROM python:3.11-slim as backend-build
+# Railway Backend-Only Deployment
+FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies for CAD libraries
 RUN apt-get update && apt-get install -y \
     gcc g++ cmake \
     libgl1-mesa-glx libglu1-mesa \
@@ -11,57 +11,23 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install backend dependencies
-COPY backend/requirements.txt ./backend/
-RUN pip install --no-cache-dir -r backend/requirements.txt
+# Copy and install backend dependencies
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code
-COPY backend/ ./backend/
+COPY backend/ ./
 
-# Frontend build stage
-FROM node:18-alpine as frontend-build
+# Create necessary directories
+RUN mkdir -p /app/models /app/datasets /app/logs
 
-WORKDIR /app/frontend
+# Expose port (Railway sets PORT env var)
+ENV PORT=8000
+EXPOSE 8000
 
-# Copy frontend files
-COPY frontend/package*.json ./
-RUN npm ci --production
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-COPY frontend/ ./
-
-# Build frontend
-RUN npm run build
-
-# Final stage - combine both
-FROM python:3.11-slim
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx libglu1-mesa \
-    nginx \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Copy backend from build stage
-COPY --from=backend-build /app/backend ./backend
-COPY --from=backend-build /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=backend-build /usr/local/bin /usr/local/bin
-
-# Copy frontend build
-COPY --from=frontend-build /app/frontend/build ./frontend/build
-
-# Copy nginx config
-COPY railway-nginx.conf /etc/nginx/sites-available/default
-
-# Create startup script
-RUN echo '#!/bin/bash\n\
-nginx &\n\
-cd /app/backend && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}\n\
-' > /start.sh && chmod +x /start.sh
-
-# Expose port
-EXPOSE ${PORT:-8000}
-
-# Start both services
-CMD ["/start.sh"]
+# Start backend
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
