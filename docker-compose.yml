@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: aeroelite-db
+    environment:
+      POSTGRES_USER: aeroelite
+      POSTGRES_PASSWORD: aeroelite_password
+      POSTGRES_DB: aeroelite
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - aeroelite-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: aeroelite-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - aeroelite-network
+    restart: unless-stopped
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aeroelite-backend
+    environment:
+      - DATABASE_URL=postgresql://aeroelite:aeroelite_password@postgres:5432/aeroelite
+      - REDIS_URL=redis://redis:6379/0
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - VERTEX_AI_LOCATION=${VERTEX_AI_LOCATION}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - CLOUD_STORAGE_BUCKET=${CLOUD_STORAGE_BUCKET}
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - cad_models:/app/models
+      - datasets:/app/datasets
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - aeroelite-network
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aeroelite-frontend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_GOOGLE_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - aeroelite-network
+    restart: unless-stopped
+
+  # Dataset Processor (Background Job)
+  dataset-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aeroelite-processor
+    environment:
+      - DATABASE_URL=postgresql://aeroelite:aeroelite_password@postgres:5432/aeroelite
+      - REDIS_URL=redis://redis:6379/0
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+    volumes:
+      - ./backend:/app
+      - datasets:/app/datasets
+      - cad_models:/app/models
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - aeroelite-network
+    restart: unless-stopped
+    command: python -m app.workers.dataset_processor
+
+networks:
+  aeroelite-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  cad_models:
+  datasets:
